@@ -15,8 +15,8 @@ DB = dict(
 conn = mysql.connector.connect(**DB)
 cur  = conn.cursor(prepared=True)
 INSERT = ("INSERT INTO {table} "
-          "(temperature, humidity, wind_speed, soil_moisture) "
-          "VALUES (%s, %s, %s, %s)")
+          "(temperature, humidity, wind_speed, soil_moisture, topology_state) "
+          "VALUES (%s, %s, %s, %s, %s)")
 
 TIMEOUT       = 10    
 PLOT_PAUSE    = 3   
@@ -57,9 +57,18 @@ def db_insert(table, reading):
     vals = (reading.get("temperature"),
             reading.get("humidity"),
             reading.get("wind_speed"),
-            reading.get("soil_moisture"))
+            reading.get("soil_moisture"),
+            reading.get("topology_state")) or json.dumps(ring)
     cur.execute(INSERT.format(table=table), vals)
     conn.commit()
+
+def attach_topology(reading: dict) -> dict:
+    """
+    Adds a 'topology_state' field – JSON string with the CURRENT ring order.
+    called right after sensor_polling.get_local_measurements().
+    """
+    reading["topology_state"] = json.dumps(ring) 
+    return reading
 
 
 def update_topology_and_indices(node_addr):
@@ -129,8 +138,10 @@ def forward_token(token):
     """
     global ring, N, my_index
 
-    if N == 0:
+    if N-1 == 0:
         print(f"[{role}] No successors left. I must be last-alive.")
+        for rec in token["data"]:
+                db_insert(f"sensor_readings{rec['node']+1}", rec)
         return False
 
     attempts = 0
@@ -198,7 +209,7 @@ round_num = 1
 try:
     while True:
         if role == "start" and round_num == 1:
-            reading = sensor_polling.get_local_measurements(my_index)
+            reading = attach_topology(sensor_polling.get_local_measurements(my_index))
             token = {
                 "source": my_addr,    #include source
                 "data":   [reading],
@@ -214,7 +225,7 @@ try:
 
         if tok is None:
             print(f"[{role}] no token — re-initiating token ring")
-            reading = sensor_polling.get_local_measurements(my_index)
+            reading = attach_topology(sensor_polling.get_local_measurements(my_index))
             token = {
                 "source": my_addr,   #include source
                 "data":   [reading],
@@ -228,7 +239,7 @@ try:
         token = tok or []
         print(f"[{role}] got token: {token}")
 
-        reading = sensor_polling.get_local_measurements(my_index)
+        reading = attach_topology(sensor_polling.get_local_measurements(my_index))
         token["data"].append(reading)
 
         if len(token["data"]) == N:
